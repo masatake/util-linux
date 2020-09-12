@@ -19,6 +19,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -94,6 +95,8 @@ struct fincore_control {
 		     noheadings : 1,
 		     raw : 1,
 		     json : 1;
+
+	int drop;
 };
 
 
@@ -310,8 +313,14 @@ static int fincore_name(struct fincore_control *ctl,
 	if (S_ISDIR(sb->st_mode))
 		rc = 1;			/* ignore */
 
-	else if (sb->st_size)
+	else if (sb->st_size) {
+		if (ctl->drop) {
+			rc = posix_fadvise(fd, 0, sb->st_size, POSIX_FADV_DONTNEED);
+			if (rc < 0)
+				warn(_("failed to do posix_fadvise: %s"), name);
+		}
 		rc = fincore_fd(ctl, fd, name, sb->st_size, count_incore, nodes_counter);
+	}
 
 	close (fd);
 	return rc;
@@ -331,6 +340,7 @@ static void __attribute__((__noreturn__)) usage(void)
 	fputs(_(" -n, --noheadings      don't print headings\n"), out);
 	fputs(_(" -o, --output <list>   output columns\n"), out);
 	fputs(_(" -r, --raw             use raw output format\n"), out);
+	fputs(_(" -d, --drop            try to drop pages before counting\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	printf(USAGE_HELP_OPTIONS(23));
@@ -354,11 +364,13 @@ int main(int argc, char ** argv)
 	int collect_nodedst = 0;
 
 	struct fincore_control ctl = {
+		.drop     = 0,
 		.pagesize = getpagesize()
 	};
 
 	static const struct option longopts[] = {
 		{ "bytes",      no_argument, NULL, 'b' },
+		{ "drop",       no_argument, NULL, 'd' },
 		{ "noheadings", no_argument, NULL, 'n' },
 		{ "output",     required_argument, NULL, 'o' },
 		{ "version",    no_argument, NULL, 'V' },
@@ -373,10 +385,13 @@ int main(int argc, char ** argv)
 	textdomain(PACKAGE);
 	close_stdout_atexit();
 
-	while ((c = getopt_long (argc, argv, "bno:JrVh", longopts, NULL)) != -1) {
+	while ((c = getopt_long (argc, argv, "bdno:JrVh", longopts, NULL)) != -1) {
 		switch (c) {
 		case 'b':
 			ctl.bytes = 1;
+			break;
+		case 'd':
+			ctl.drop = 1;
 			break;
 		case 'n':
 			ctl.noheadings = 1;
