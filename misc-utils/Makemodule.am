@@ -216,6 +216,10 @@ dist_man_MANS += misc-utils/fincore.1
 fincore_SOURCES = misc-utils/fincore.c
 fincore_LDADD = $(LDADD) libsmartcols.la libcommon.la
 fincore_CFLAGS = $(AM_CFLAGS) -I$(ul_libsmartcols_incdir)
+if HAVE_NUMA
+fincore_LDADD += $(NUMA_LIBS)
+fincore_CFLAGS += $(NUMA_CFLAGS)
+endif
 endif
 
 if BUILD_HARDLINK

@@ -26,11 +26,23 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef HAVE_NUMA
+#include <numa.h>
+#include <numaif.h>
+#define NUMA_EXT
+#else
+#define NUMA_EXT __attribute__((__unused__))
+#endif	/* HAVE_NUMA */
+
 #include "c.h"
 #include "nls.h"
 #include "closestream.h"
 #include "xalloc.h"
 #include "strutils.h"
+
+#ifdef HAVE_NUMA
+#include "strv.h"
+#endif	/* HAVE_NUMA */
 
 #include "libsmartcols.h"
 
@@ -54,6 +66,9 @@ enum {
 	COL_PAGES,
 	COL_SIZE,
 	COL_FILE,
+#ifdef HAVE_NUMA
+	COL_NODEDST,
+#endif	/* HAVE_NUMA */
 	COL_RES
 };
 
@@ -62,6 +77,9 @@ static struct colinfo infos[] = {
 	[COL_RES]    = { "RES",      5, SCOLS_FL_RIGHT, N_("file data resident in memory in bytes")},
 	[COL_SIZE]   = { "SIZE",     5, SCOLS_FL_RIGHT, N_("size of the file")},
 	[COL_FILE]   = { "FILE",     4, 0, N_("file name")},
+#ifdef HAVE_NUMA
+	[COL_NODEDST]= { "NODEDST",  7, 0, N_("pages distribution in numa nodes")},
+#endif	/* HAVE_NUMA */
 };
 
 static int columns[ARRAY_SIZE(infos) * 2] = {-1};
@@ -109,7 +127,8 @@ static const struct colinfo *get_column_info(int num)
 static int add_output_data(struct fincore_control *ctl,
 			   const char *name,
 			   off_t file_size,
-			   off_t count_incore)
+			   off_t count_incore,
+			   int *nodes_counter NUMA_EXT)
 {
 	size_t i;
 	char *tmp;
@@ -151,6 +170,21 @@ static int add_output_data(struct fincore_control *ctl,
 				tmp = size_to_human_string(SIZE_SUFFIX_1LETTER, file_size);
 			rc = scols_line_refer_data(ln, i, tmp);
 			break;
+#ifdef HAVE_NUMA
+		case COL_NODEDST:
+			if (!nodes_counter)
+				break;
+			char ** v = NULL;
+			for (int i = 0; i < NUMA_NUM_NODES; i++) {
+				if (nodes_counter[i] != 0)
+					strv_extendf (&v, "[%d]=%d ", i, nodes_counter[i]);
+			}
+			if (v) {
+				scols_line_refer_data(ln, i, strv_join (v, " "));
+				strv_free (v);
+			}
+			break;
+#endif	/* HAVE_NUMA */
 		default:
 			return -EINVAL;
 		}
@@ -165,7 +199,8 @@ static int add_output_data(struct fincore_control *ctl,
 static int do_mincore(struct fincore_control *ctl,
 		      void *window, const size_t len,
 		      const char *name,
-		      off_t *count_incore)
+		      off_t *count_incore,
+		      int *nodes_counter NUMA_EXT)
 {
 	static unsigned char vec[N_PAGES_IN_WINDOW];
 	int n = (len / ctl->pagesize) + ((len % ctl->pagesize)? 1: 0);
@@ -175,14 +210,40 @@ static int do_mincore(struct fincore_control *ctl,
 		return -errno;
 	}
 
+	off_t original_count_incore  NUMA_EXT = *count_incore;
+	static void* incore_pages[N_PAGES_IN_WINDOW] NUMA_EXT;
 	while (n > 0)
 	{
 		if (vec[--n] & 0x1)
 		{
+#ifdef HAVE_NUMA
+			if (nodes_counter) {
+				off_t d = *count_incore - original_count_incore;
+				incore_pages [d] = (void *)(((char *)window) + (ctl->pagesize * n));
+				volatile char c __attribute__((__unused__)) = *(char*)(incore_pages [d]);
+			}
+#endif	/* HAVE_NUMA */
 			vec[n] = 0;
 			(*count_incore)++;
 		}
 	}
+
+#ifdef HAVE_NUMA
+	if (!nodes_counter)
+		return 0;
+
+	off_t d = *count_incore - original_count_incore;
+	static int status[N_PAGES_IN_WINDOW];
+	if (move_pages (0, (int)d, incore_pages, NULL, status, 0/* MPOL_MF_MOVE_ALL*/) < 0) {
+		warn(_("failed to do move_pages: %s"), name);
+		return -errno;
+	}
+	for (int i = 0; i < (int)d; i++) {
+		if (status [i] < 0)
+			continue;
+		nodes_counter [status [i]]++;
+	}
+#endif	/* HAVE_NUMA */
 
 	return 0;
 }
@@ -191,7 +252,8 @@ static int fincore_fd (struct fincore_control *ctl,
 		       int fd,
 		       const char *name,
 		       off_t file_size,
-		       off_t *count_incore)
+		       off_t *count_incore,
+		       int   *nodes_counter NUMA_EXT)
 {
 	size_t window_size = N_PAGES_IN_WINDOW * ctl->pagesize;
 	off_t file_offset, len;
@@ -204,14 +266,15 @@ static int fincore_fd (struct fincore_control *ctl,
 		if (len >= (off_t) window_size)
 			len = window_size;
 
-		window = mmap(window, len, PROT_NONE, MAP_PRIVATE, fd, file_offset);
+		int prot = nodes_counter? PROT_READ: 0;
+		window = mmap(window, len, prot, MAP_SHARED, fd, file_offset);
 		if (window == MAP_FAILED) {
 			rc = -EINVAL;
 			warn(_("failed to do mmap: %s"), name);
 			break;
 		}
 
-		rc = do_mincore(ctl, window, len, name, count_incore);
+		rc = do_mincore(ctl, window, len, name, count_incore, nodes_counter);
 		if (rc)
 			break;
 
@@ -227,7 +290,8 @@ static int fincore_fd (struct fincore_control *ctl,
 static int fincore_name(struct fincore_control *ctl,
 			const char *name,
 			struct stat *sb,
-			off_t *count_incore)
+			off_t *count_incore,
+			int *nodes_counter NUMA_EXT)
 {
 	int fd;
 	int rc = 0;
@@ -247,7 +311,7 @@ static int fincore_name(struct fincore_control *ctl,
 		rc = 1;			/* ignore */
 
 	else if (sb->st_size)
-		rc = fincore_fd(ctl, fd, name, sb->st_size, count_incore);
+		rc = fincore_fd(ctl, fd, name, sb->st_size, count_incore, nodes_counter);
 
 	close (fd);
 	return rc;
@@ -287,6 +351,7 @@ int main(int argc, char ** argv)
 	size_t i;
 	int rc = EXIT_SUCCESS;
 	char *outarg = NULL;
+	int collect_nodedst = 0;
 
 	struct fincore_control ctl = {
 		.pagesize = getpagesize()
@@ -364,14 +429,18 @@ int main(int argc, char ** argv)
 	for (i = 0; i < ncolumns; i++) {
 		const struct colinfo *col = get_column_info(i);
 		struct libscols_column *cl;
+		int id = get_column_id(i);
 
 		cl = scols_table_new_column(ctl.tb, col->name, col->whint, col->flags);
 		if (!cl)
 			err(EXIT_FAILURE, _("failed to allocate output column"));
 
-		if (ctl.json) {
-			int id = get_column_id(i);
+#ifdef HAVE_NUMA
+		if (id == COL_NODEDST)
+			collect_nodedst = 1;
+#endif	/* HAVE_NUMA */
 
+		if (ctl.json) {
 			switch (id) {
 			case COL_FILE:
 				scols_column_set_json_type(cl, SCOLS_JSON_STRING);
@@ -392,10 +461,17 @@ int main(int argc, char ** argv)
 		char *name = argv[optind];
 		struct stat sb;
 		off_t count_incore = 0;
+#ifdef HAVE_NUMA
+		int  nodes_counter [NUMA_NUM_NODES] = {0, };
+#else
+		int *nodes_counter = NULL;
+#endif
 
-		switch (fincore_name(&ctl, name, &sb, &count_incore)) {
+		switch (fincore_name(&ctl, name, &sb, &count_incore,
+				     collect_nodedst? nodes_counter: NULL)) {
 		case 0:
-			add_output_data(&ctl, name, sb.st_size, count_incore);
+			add_output_data(&ctl, name, sb.st_size, count_incore,
+					collect_nodedst? nodes_counter: NULL);
 			break;
 		case 1:
 			break; /* ignore */

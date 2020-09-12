@@ -2508,6 +2508,23 @@ AS_IF([test "x$with_cryptsetup" = xno], [
 AC_SUBST([CRYPTSETUP_LIBS])
 AC_SUBST([CRYPTSETUP_LIBS_STATIC])
 
+AC_ARG_WITH([numa],
+  AS_HELP_STRING([--without-numa], [do not use numa]),
+  [], [with_numa=check]
+)
+
+have_numa=no
+AS_IF([test "x$with_econf" != xno], [
+  PKG_CHECK_MODULES([NUMA], [numa], [have_numa=yes], [have_numa=no])
+    AS_CASE([$with_numa:$have_numa],
+    [yes:no],
+      [AC_MSG_ERROR([numa expected but numa module not found])],
+    [*:yes],
+       AC_DEFINE([HAVE_NUMA], [1], [Define if numa module is available])
+  )
+])
+AM_CONDITIONAL([HAVE_NUMA], [test "x$have_numa" = xyes])
+
 
 AC_ARG_VAR([SUID_CFLAGS],
 	   [CFLAGS used for binaries which are usually with the suid bit])
