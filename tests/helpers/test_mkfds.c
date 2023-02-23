@@ -1641,9 +1641,11 @@ static void raw6_init_addr(struct sockaddr *addr, bool remote_addr)
 	in6->sin6_family = AF_INET6;
 	in6->sin6_flowinfo = 0;
 
-	if (remote_addr)
+	if (remote_addr) {
+		/* ::ffff:127.0.0.1 */
+		in6->sin6_addr.s6_addr16[5] = 0xffff;
 		in6->sin6_addr.s6_addr32[3] = htonl(INADDR_LOOPBACK);
-	else
+	} else
 		in6->sin6_addr = in6addr_loopback;
 }
 
