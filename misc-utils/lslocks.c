@@ -618,7 +618,7 @@ static void xstrcoholder(char **str, struct lock *l)
 }
 
 static char *get_data(struct lslocks *lslocks, struct lock *l, int num,
-		      uint64_t *rawdata)
+		      uint64_t *rawdata, bool for_filter)
 {
 	char *str = NULL;
 
@@ -634,7 +634,8 @@ static char *get_data(struct lslocks *lslocks, struct lock *l, int num,
 		xasprintf(&str, "%s", l->cmdname ? l->cmdname : notfnd);
 		break;
 	case COL_PID:
-		xasprintf(&str, "%d", l->pid);
+		if (!(for_filter && l->pid < 0))
+			xasprintf(&str, "%d", l->pid);
 		break;
 	case COL_TYPE:
 		xasprintf(&str, "%s", l->type);
@@ -746,7 +747,7 @@ static int filter_filler_cb(struct libscols_filter *filter __attribute__((__unus
 	bool needs_rawdata = !!scols_column_has_data_func(cl);
 	uint64_t rawdata = (uint64_t) -1;
 	char *data = get_data(fid->lslocks, fid->l, column_index,
-			      needs_rawdata ? &rawdata : NULL);
+			      needs_rawdata ? &rawdata : NULL, true);
 	if (data) {
 		set_line_data(line, column_index, data);
 		if (needs_rawdata && rawdata != (uint64_t) -1)
@@ -809,10 +810,16 @@ static void add_scols_line(struct lslocks *lslocks,
 	for (size_t i = 0; i < ncolumns; i++) {
 		char *str;
 
-		if (scols_line_is_filled(line, i))
-			continue;
+		if (scols_line_is_filled(line, i)) {
+			int colid = get_column_id(i);
+			if (colid == COL_PID && l->pid < 0) {
+				struct libscols_cell *cell = scols_line_get_cell(line, i);
+				scols_reset_cell(cell);
+			} else
+				continue;
+		}
 
-		str = get_data(lslocks, l,  i, NULL);
+		str = get_data(lslocks, l,  i, NULL, false);
 		if (str)
 			set_line_data(line, i, str);
 	}
