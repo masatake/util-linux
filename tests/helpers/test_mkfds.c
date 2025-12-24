@@ -39,7 +39,9 @@
 # include <linux/unix_diag.h> /* for UNIX domain sockets */
 #include <linux/sockios.h>  /* SIOCGSKNS */
 #include <linux/vm_sockets.h>
-#include <linux/vm_sockets_diag.h> /* vsock_diag_req/vsock_diag_msg */
+#if HAVE_LINUX_VM_SOCKETS_DIAG_H
+# include <linux/vm_sockets_diag.h> /* vsock_diag_req/vsock_diag_msg */
+#endif
 #include <mqueue.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -2024,7 +2026,7 @@ static void *make_ping6(const struct factory *factory, struct fdesc fdescs[],
 				(struct sockaddr *)&in6);
 }
 
-#if HAVE_DECL_VMADDR_CID_LOCAL
+#if HAVE_DECL_VMADDR_CID_LOCAL && HAVE_LINUX_VM_SOCKETS_DIAG_H
 static void *make_vsock(const struct factory *factory, struct fdesc fdescs[],
 			int argc, char ** argv)
 {
@@ -2161,7 +2163,7 @@ static void *make_vsock(const struct factory *factory, struct fdesc fdescs[],
 	};
 	return NULL;
 }
-#endif	/* HAVE_DECL_VMADDR_CID_LOCAL */
+#endif	/* HAVE_DECL_VMADDR_CID_LOCAL && HAVE_LINUX_VM_SOCKETS_DIAG_H */
 
 #ifdef SIOCGSKNS
 static void *make_netns(const struct factory *factory _U_, struct fdesc fdescs[],
@@ -3239,8 +3241,10 @@ static void *make_sockdiag(const struct factory *factory, struct fdesc fdescs[],
 
 	if (strcmp(sfamily, "unix") == 0)
 		ifamily = AF_UNIX;
+#if HAVE_LINUX_VM_SOCKETS_DIAG_H
 	else if (strcmp(sfamily, "vsock") == 0)
 		ifamily = AF_VSOCK;
+#endif	/* HAVE_LINUX_VM_SOCKETS_DIAG_H */
 	else
 		errx(EXIT_FAILURE, "unknown/unsupported family: %s", sfamily);
 
@@ -3267,7 +3271,9 @@ static void *make_sockdiag(const struct factory *factory, struct fdesc fdescs[],
 		};
 		req = &udr;
 		reqlen = sizeof(udr);
-	} else if (ifamily == AF_VSOCK) {
+	}
+#if HAVE_LINUX_VM_SOCKETS_DIAG_H
+	else if (ifamily == AF_VSOCK) {
 		struct vsock_diag_req vdr = (struct vsock_diag_req) {
 			.sdiag_family = AF_VSOCK,
 			.vdiag_states = ~(uint32_t)0,
@@ -3275,6 +3281,7 @@ static void *make_sockdiag(const struct factory *factory, struct fdesc fdescs[],
 		req = &vdr;
 		reqlen = sizeof(vdr);
 	}
+#endif	/* HAVE_LINUX_VM_SOCKETS_DIAG_H	 */
 
 	e = send_diag_request(diagsd, req, reqlen);
 	if (e) {
@@ -3984,7 +3991,7 @@ static const struct factory factories[] = {
 			PARAM_END
 		}
 	},
-#if HAVE_DECL_VMADDR_CID_LOCAL
+#if HAVE_DECL_VMADDR_CID_LOCAL && HAVE_LINUX_VM_SOCKETS_DIAG_H
 	{
 		"vsock",
 		.desc = "AF_VSOCK sockets",
@@ -4014,7 +4021,7 @@ static const struct factory factories[] = {
 			PARAM_END
 		}
 	},
-#endif	/* HAVE_DECL_VMADDR_CID_LOCAL */
+#endif	/* HAVE_DECL_VMADDR_CID_LOCAL && HAVE_LINUX_VM_SOCKETS_DIAG_H */
 #ifdef SIOCGSKNS
 	{
 		.name = "netns",
@@ -4312,7 +4319,11 @@ static const struct factory factories[] = {
 				.name = "family",
 				.type = PTYPE_STRING,
 				/* TODO: inet, inet6 */
-				.desc = "name of a protocol family ([unix]|vsock)",
+				.desc = "name of a protocol family ([unix]"
+#if HAVE_LINUX_VM_SOCKETS_DIAG_H
+				"|vsock"
+#endif	/* HAVE_LINUX_VM_SOCKETS_DIAG_H */
+				")",
 				.defv.string = "unix",
 			},
 			PARAM_END
