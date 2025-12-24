@@ -3236,8 +3236,6 @@ static void *make_sockdiag(const struct factory *factory, struct fdesc fdescs[],
 	void *req = NULL;
 	size_t reqlen = 0;
 	int e;
-	struct unix_diag_req udr;
-	struct vsock_diag_req vdr;
 
 	if (strcmp(sfamily, "unix") == 0)
 		ifamily = AF_UNIX;
@@ -3262,7 +3260,7 @@ static void *make_sockdiag(const struct factory *factory, struct fdesc fdescs[],
 	free_arg(&type);
 
 	if (ifamily == AF_UNIX) {
-		udr = (struct unix_diag_req) {
+		struct unix_diag_req udr = (struct unix_diag_req) {
 			.sdiag_family = AF_UNIX,
 			.udiag_states = -1, /* set the all bits. */
 			.udiag_show = UDIAG_SHOW_NAME | UDIAG_SHOW_PEER | UNIX_DIAG_SHUTDOWN,
@@ -3270,7 +3268,7 @@ static void *make_sockdiag(const struct factory *factory, struct fdesc fdescs[],
 		req = &udr;
 		reqlen = sizeof(udr);
 	} else if (ifamily == AF_VSOCK) {
-		vdr = (struct vsock_diag_req) {
+		struct vsock_diag_req vdr = (struct vsock_diag_req) {
 			.sdiag_family = AF_VSOCK,
 			.vdiag_states = ~(uint32_t)0,
 		};
